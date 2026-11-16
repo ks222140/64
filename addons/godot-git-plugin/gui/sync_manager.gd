@@ -20,6 +20,8 @@ var pending_blobs = 0
 var total_blobs = 0
 
 func setup(a: GodotGitApi):
+    if api != null and api.response_received.is_connected(_on_api_resp):
+        api.response_received.disconnect(_on_api_resp)
     api = a
     api.response_received.connect(_on_api_resp)
 

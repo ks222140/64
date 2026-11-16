@@ -38,6 +38,8 @@ var selected_commit_idx = -1
 var release_id = 0
 var pending_apk_path = ""
 var temp_path = ""
+var head_commit_sha = ""
+var head_tree_sha = ""
 
 func _ready():
     api = ApiScript.new()
@@ -46,15 +48,22 @@ func _ready():
     sync_mgr = SyncScript.new()
     add_child(sync_mgr)
     
-    # 极其严格地防重复连接
-    if not api.response_received.is_connected(_on_api_resp):
-        api.response_received.connect(_on_api_resp)
-    if not sync_mgr.progress_update.is_connected(_set_progress):
-        sync_mgr.progress_update.connect(_set_progress)
-    if not sync_mgr.log_msg.is_connected(_log):
-        sync_mgr.log_msg.connect(_log)
-    if not sync_mgr.sync_finished.is_connected(_on_sync_finished):
-        sync_mgr.sync_finished.connect(_on_sync_finished)
+    # 强制断开再重连，绝对不让它报红字
+    if api.response_received.is_connected(_on_api_resp):
+        api.response_received.disconnect(_on_api_resp)
+    api.response_received.connect(_on_api_resp)
+    
+    if sync_mgr.progress_update.is_connected(_set_progress):
+        sync_mgr.progress_update.disconnect(_set_progress)
+    sync_mgr.progress_update.connect(_set_progress)
+    
+    if sync_mgr.log_msg.is_connected(_log):
+        sync_mgr.log_msg.disconnect(_log)
+    sync_mgr.log_msg.connect(_log)
+    
+    if sync_mgr.sync_finished.is_connected(_on_sync_finished):
+        sync_mgr.sync_finished.disconnect(_on_sync_finished)
+    sync_mgr.sync_finished.connect(_on_sync_finished)
     
     _build_ui()
     _create_diff_window()
@@ -102,13 +111,13 @@ func _build_ui():
     branch_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     h2.add_child(branch_edit)
     var btn_refresh = Button.new()
-    btn_refresh.text = "Fetch"
+    btn_refresh.text = "抓取"
     btn_refresh.pressed.connect(_fetch_remote_tree)
     h2.add_child(btn_refresh)
     main_vbox.add_child(h2)
 
     var save_btn = Button.new()
-    save_btn.text = "Save"
+    save_btn.text = "保存"
     save_btn.pressed.connect(_save_config)
     main_vbox.add_child(save_btn)
 
@@ -247,9 +256,38 @@ func _push_atomic():
     if branch_edit.text.strip_edges() == "": branch_edit.text = "main"
     sync_mgr.start_sync(branch_edit.text)
 
-# ============ 其他核心逻辑 ============
+# ============ 核心抓取逻辑（带超时监控） ============
+func _fetch_remote_tree():
+    _setup_api()
+    if branch_edit.text.strip_edges() == "": branch_edit.text = "main"
+    _set_progress(10, "Getting branch info...")
+    _log("Fetching branch: " + branch_edit.text)
+    api.api_get("/branches/" + branch_edit.text, "refresh_branch_info")
+    
+    var timer = get_tree().create_timer(5.0)
+    timer.timeout.connect(func():
+        if progress_bar.value == 10:
+            _log("[color=red]抓取超时！可能原因：1. 网络断开 2. 仓库/分支名错 3. Token失效[/color]")
+            _set_progress(0, "Timeout")
+    )
+
+# ============ 回调中心 ============
 func _on_api_resp(tag: String, code: int, text: String, index: int):
     match tag:
+        "refresh_branch_info":
+            if code != 200:
+                _log("[color=red]HTTP " + str(code) + ": " + text + "[/color]")
+                _set_progress(0, "Failed")
+                return
+            var json = JSON.parse_string(text)
+            if json and json.has("commit"):
+                head_tree_sha = json["commit"]["commit"]["tree"]["sha"]
+                _log("Branch found. Fetching tree...")
+                api.api_get("/git/trees/" + head_tree_sha + "?recursive=1", "refresh_tree")
+            else:
+                _log("[color=red]Parse error: " + text + "[/color]")
+                _set_progress(0, "Parse Error")
+                
         "refresh_tree":
             var json = JSON.parse_string(text)
             if json and json.has("tree"):
@@ -262,6 +300,7 @@ func _on_api_resp(tag: String, code: int, text: String, index: int):
                 _set_progress(100, "Refresh done")
             else:
                 _log("[color=red]Refresh failed: " + text + "[/color]")
+                _set_progress(0, "Failed")
                 
         "pull_file":
             var json = JSON.parse_string(text)
@@ -359,12 +398,6 @@ func _on_api_resp(tag: String, code: int, text: String, index: int):
                 _log("[color=green]APK Upload Success![/color]")
             else:
                 _log("[color=red]APK Upload Failed: " + str(code) + "[/color]")
-
-func _fetch_remote_tree():
-    _setup_api()
-    if branch_edit.text.strip_edges() == "": branch_edit.text = "main"
-    _set_progress(10, "Getting branch info...")
-    api.api_get("/branches/" + branch_edit.text, "refresh_branch_info")
 
 func _create_pull_request():
     _setup_api()
