@@ -1,0 +1,110 @@
+# Maintaining GittyDot
+
+GittyDot 0.2.6 (Correctness and Responsiveness Update) is a fork of the Godit 1.1.1 package, verified on Godot 4.4.1, 4.5.2, 4.6.3, 4.7, 4.7.2 and 4.8 beta1 on Windows. The original MIT license and author attribution remain in LICENSE. UPSTREAM_README.md preserves the upstream instructions. upstream.json records the source package's checksums before customization.
+
+## Source boundaries
+
+- `util/git_cli.gd` retains the upstream process execution backend. Its command log is private and mutex-protected; consumers use `log_snapshot()`/`clear_log()`. `@tool` initializes the static mutex in the editor. SSH options are passed only through Git's argv; do not copy repository `core.sshCommand` into the editor environment. The remaining noninteractive prompt/editor environment overrides are restored on disable.
+- `dock/widgets/git_console.gd` gates hard reset, destructive clean, forced push and global/system config writes before starting Git. Resolve aliases before classification, protect shell aliases, and honor global option prefixes and the `--` delimiter. Render output with `add_text()`, never parse untrusted output as BBCode.
+- `util/repo_setup.gd` reloads the full GittyDot plugin path after initialization/publishing and excludes project-local agent temp folders from new repositories.
+- `util/git_cli_repo.gd` retains the Git operations, with temporary paths redirected into the project's agent temp folder.
+- Selected-commit amend validates branch ancestry, operation state, merges and GittyDot's Git 2.45.0 compatibility floor before mutation. It creates an `amend! <full hash>` helper with a normal commit (preserving hooks/signing) and autosquashes it, so duplicate subjects cannot select the wrong commit. Rebase conflicts retain recovery information in the Git directory; Abort removes the helper with a soft reset, restoring amendment staging. Continue/Skip clear recovery data when replay finishes.
+- `dock/widgets/dialogs.gd` records UI diagnostics with stable console entry ids and exposes Show details in Console. `plugin.gd` binds/unbinds its navigation callback. Console output remains literal; diagnostic labels must not masquerade as executed Git commands. Preserve the draft and target on failure or cancellation, and block duplicate submissions during confirmation/commit.
+- `plugin.gd` owns editor integration and lifecycle.
+- `util/script_autosave.gd` owns automatic saving through Godot's native ScriptEditor API.
+- `dock/gittydot_screen.gd` owns the central comparison screen and patch actions.
+- `dock/widgets/working_diff.gd` owns full-file working-text buffers. The right CodeEdit is editable; the baseline is read-only. Never put diff signs, collapsed-context summaries or alignment padding in the editable text. Both ScrollContainers retain a common horizontal range; vertical scrolling maps actual source lines through changed regions. Preserve native CodeEdit Undo and caret during refreshes.
+- Working-file saves check the disk baseline and competing native drafts, write/verify a project-local temporary file, recheck the baseline, then atomically replace the target without touching staging. Preserve BOM, newline style and final-newline state. `save_guard.gd` flushes these buffers before Git operations; failed saves block operations/navigation and retain recovery drafts. Auto-save shares the existing preference; manual Save stays available. Native script tabs synchronize after saves; clean cached scenes reload only on the explicit Open in Editor action.
+- `dock/widgets/diff_view.gd` owns the resizable comparison panes. Both panes share aligned visual rows, patch selection and pixel scroll ranges; narrower/shorter versions retain blank comparison space as needed for alignment. Switching comparisons must refresh Godot's cached child extent so obsolete scrollbars disappear. Unified, image and scene/config views remain available.
+- `dock/panels/history_panel.gd` sends file activations to the central comparison screen. Single-click selects a row; double-click/Enter emits the selected commit or stash revisions. The log never creates its own inline file diff.
+- `dock/gutter/change_preview.gd` owns the compact inline preview. `util/inline_diff.gd` aligns changed lines and computes bounded character edits; `dock/gutter/inline_highlights.gd` paints subtle line tints and stronger character backgrounds before native syntax and selection. Glyph geometry comes from CodeEdit; editing clears stale geometry immediately. Godot's opaque deprecated background color is temporarily moved into equivalent native style backgrounds, since its private text canvas otherwise covers custom gutter drawing. Teardown restores the original theme overrides and leaves native line colors intact.
+- `dock/filesystem/filesystem_colors.gd` owns native FileSystem decorations.
+- `dock/panels/changes_panel.gd` retains upstream staging/commit/changelist logic with a focused dock layout and automatic staging disabled by default.
+- Folder/group rows are deliberately non-selectable. Their context menus use direct `gui_input` hit testing; do not rely solely on `item_mouse_selected`. `util/tree_folders.gd` stores the exact repository-relative folder path in row metadata. Folder stage/unstage actions affect displayed descendants and preserve unrelated staging.
+- Ignore actions append anchored literal rules, escape glob characters and spaces, retain existing rules, and leave the index and disk files intact. Already tracked files stay tracked. The Commit and native FileSystem menus expose these actions for files and folders.
+
+Changes to Git operations should be narrowly scoped. Do not replace the backend with shell command strings: argv must remain separate arguments. Preserve partial staging and unsaved buffers. Never auto-commit, auto-push, or auto-stage by default.
+
+## Observable behaviour
+
+Auto-save is enabled by default. Editing an open, project-backed script schedules a native save after 350 milliseconds without another edit. Losing application focus flushes pending edits. Explicit staging and Git operations flush pending script saves first. The native editor owns serialization, saved markers and Undo; the plugin does not write editor buffers directly.
+
+If a file disappears or changes on disk after its editor baseline was captured, automatic saving pauses. A matching editor reload adopts the new baseline. An external change to a clean but stale editor buffer must also block its next save. Saving automatically does not stage any changes. Unsaved changes in the native Scene editor and untitled or embedded scripts still require the native save workflow before Git operations; raw scene text in the working-file pane uses its guarded text-save flow.
+
+The central diff defaults to HEAD versus the working file. This includes staged and unstaged changes together. New files compare against an empty baseline. Side-by-side working-file comparisons expose full text editing with filtered/context/structured views and hunk actions disabled. Unified, staged and historical comparisons remain read-only; applicable inspection modes expose stage, unstage and revert actions. Applying a patch must fail safely when its context no longer matches. HEAD comparison does not apply patches because its patch is not necessarily valid against a partially staged index.
+
+FileSystem badges decorate suffixes, preserving filenames and metadata. Disable/re-enable must remove hooks without losing editor buffers, removing engine UI, or freeing a registered submenu twice.
+
+## Verification
+
+From the project root:
+
+```powershell
+python tools/test_gittydot.py --godot 'C:\Tools\Godot\Godot.exe'
+```
+
+The runner creates an isolated project and Git repository inside `<project-name>-temp-chatgpt/gittydot`, copies the addon, and executes the editor checks on a portable headless Godot. It never stages or commits the game repository. Every fixture retains its result JSON and editor log for inspection.
+
+The checks cover real editor saves and Undo, external-change protection, partial staging, central patch staging/unstaging, configuration-file opening, FileSystem suffixes, commit/amend, preference persistence, and plugin teardown/re-enable. Inline-preview checks exercise layout, narrow-editor bounds, previous-code display, rollback and Undo, Show Diff routing, Escape, character edits, continuous bars, native glyph geometry, clipping and cleanup. Split-pane checks cover alignment, divider resizing, two-way scrolling on both axes, common end ranges, patch selection and overflow-to-short scrollbar cleanup. Add `--visual` for hidden graphical editor captures and pixel checks of actual insertion/replacement backgrounds, including the final character and modification colors in the previous version. These checks do not prove visual polish, remote authentication, every upstream branch operation, or compatibility with other Godot versions.
+
+## Updating upstream
+
+Read upstream changes against upstream.json and the original package. Port backend fixes individually; avoid overwriting GittyDot's integration files with the upstream plugin entry point. Re-run the editor checks and inspect the Commit dock, central diff and FileSystem in a graphical Godot session. Update plugin.cfg, README.md and the baseline manifest when deliberately adopting a new upstream package.
+
+## Remaining work
+
+Further work includes exact IntelliJ toolbar matching, multiple concurrent diff tabs, broader keyboard shortcuts, and image/scene workflow polish. Godot's internal FileSystem controls need verification when upgrading the engine.
+
+## Installed layout
+
+Runtime resources and installed documentation live in `addons/gittydot/`. The installed verification script is `addons/gittydot/tests/editor_checks.gd`, with `tools/test_gittydot.py` at the game project root. In the standalone source repository, verification lives in root `tests/`, tooling in root `tools/`, and contributor documentation/provenance at the root. Standalone distribution README links deliberately differ from the installed README's local links.
+
+## 0.2.0 UI contracts
+
+The full-document editors retain outer ScrollContainers. Runtime NavigationLayer overlays reserve fixed gutter/overview strips, draw above overflowing text, accept clicks only in those strips, and leave caret/selection/Undo untouched. Clip drawing and clamp viewport indicators for unequal document lengths. Invalidate ranges on text changes and rebuild after debounce or saves. No authored scene hierarchy was changed for these overlays.
+
+`util/diff_palette.gd` is shared by read-only DiffRows and working comparisons. InlineHighlights only opts into it through `workspace_side`; its default native-script palette remains unchanged. Open in Editor checks disk presence for scripts and uses cached resources for dirty native drafts, while refreshing clean resources. Preserve guarded comparison saves before opening.
+
+OptionButton.fit_to_longest_item must remain off in Commit. Keep the layout origin at the left, clip Tree text columns with end ellipses, reserve the scaled checkbox column, and compact the shared sync bar before its minimum width can displace the dock.
+
+Use `--visual --ui-only` for the focused layout/navigation/color loop and `--editor-scale 1.5` for increased scale. Run the full graphical suite for save/recovery/native-editor and Git regressions. The portable test editor disables update polling and the runner fails on engine errors as well as script and startup diagnostics.
+
+Windows Git compatibility is determined on the main thread in `GitCli.prepare_environment()` before watchers/jobs start. Every repository command uses `argv()` to disable the legacy experimental monitor, and Git older than 2.37 additionally disables the modern monitor flag. Do not probe versions in worker threads or rewrite system/global config to enforce this policy. Fixture setup also disables inherited monitors so old-Git testing cannot spawn experimental daemons.
+
+## Editor lifecycle compatibility
+
+Identify authored-scene content using `edited_scene_root` ancestry, never viewport equality. Plugin docks must initialize their runtime controls even while a native scene is open. WorkingDiff detaches drawing hooks and save registration on exit, then restores them after every tree entry; `_ready()` alone does not repeat after reparenting. Reuse its named custom gutter and navigation overlays to avoid duplicates. Keep the full text buffers, caret and Undo intact.
+
+The test runner isolates portable editors by actual version/build and display scale, and writes `editor_settings-<major>.<minor>.tres` for that engine. Do not share a mutable engine copy or assume 4.7 settings cover a 4.8 run. Tests cover panel initialization with an authored scene open, repeated comparison reparenting, draw hooks and save registration.
+
+The Git Log dock must also tolerate repeated ready notifications: resolve its authored HistoryPanel only on first initialization, retain the runtime panel references, and never create duplicate Log/Console tabs or signal connections. History signal binding must tolerate a temporarily unavailable panel.
+
+## 0.2.5 compatibility contracts
+
+The minimum editor version is 4.4. Godot 4.0–4.3 lack required editor APIs (including EditorContextMenuPlugin) and are not supported by this package. Do not advertise all Godot 4.x versions as supported.
+
+Use EditorOpen's feature-detected helpers for dirty scripts/scenes and native saving. Older scene detection reads the native scene strip's dirty markers; if it cannot identify the strip, treat open scenes conservatively as potentially dirty. The legacy save helper reuses only the ScriptEditor's existing autosave callback, recognizing its native class-prefixed name, without changing timer settings. Fail closed if it cannot be found; never route auto-save through a menu that may open an unrelated reload dialog.
+
+On older CodeEdits, use shaped line widths, gutter widths, font line height and theme padding for full-document sizing. Newer engines retain their native content-fit properties. Preserve Undo, native saved markers, disk-conflict checks, partial staging, overview navigation and both sides' scroll ranges.
+
+## Editable diff alignment
+
+`working_diff.gd` builds shared visual rows from zero-context Git regions, padding the shorter side of each changed block. `aligned_code_edit.gd` projects those rows while a hidden source CodeEdit owns canonical text and native Undo. Saving, recovery and diff calculation must use `get_source_text()`, which consumes deferred edits before immediate Save/Stage/file-switch actions. Never save the projected `.text`. Copy/cut selections map to source offsets; selection indentation runs on source. Comparison panes intentionally use one caret and disable selection dragging to avoid disjoint native edits across padding. Keep the native Script editor untouched.
+
+Line numbers and syntax/change highlights map source lines onto display rows; both outer ScrollContainers use equal vertical offsets. Preserve empty-file and trailing-newline distinctions. Regression checks cover insertions, deletions, unequal replacements, empty documents, EOF gaps, selection paste/copy, typing, indentation, deletion across gaps, Undo/Redo, immediate saves, recovery and both supported content-sizing paths. In InlineHighlights, a changed view signature needs a redraw even if captured glyph rectangles are unchanged.
+
+## 0.2.6 safety and performance contracts
+
+Use result dictionaries for UI staging/unstaging and retain boolean single-file wrappers for callers. Never translate a failed `add` into cached removal. Only symbolic, missing branch refs establish an unborn HEAD. Changelist metadata must describe operations that actually succeeded; on partial failure refresh the index, report the error and avoid automatic rollback.
+
+`scratch_space.gd` resolves `info/exclude` and the index through Git, handles linked worktrees and escapes literal directory patterns. Preserve comments/bytes and refuse already-tracked or ineffective/unwritable exclusions. Cached checks are invalidated by index metadata or ignore-file contents. Every scratch caller must handle an empty directory result; never join a relative filename onto it.
+
+Autosave discovery attaches new tabs once and rebaselines clean native buffers without repeated disk reads. `flush_pending()` still reads content and checks existence/baseline immediately before native saving; timestamps are never the conflict authority. Native saved markers, Undo and externally dirty drafts remain authoritative.
+
+`buffer_diff_worker.gd` owns one cancellable job and a queue of at most 32 latest-per-tab snapshots. Its worker-only cache holds at most 64 immutable root/OID/path blobs; missing/ignored interpretations are not cached permanently. Pass immutable strings/OIDs/scratch paths to workers, and keep editor nodes, WeakRefs and painting on the main thread. Publish successful signatures only after validating buffer generation, resource path, repository and current HEAD. Clear signatures when edits invalidate flags. Defer requests/results for hidden native script tabs; refresh them when visible, keeping gutter updates outside native scene-load UI. Disable joins active work and clears pending requests before removing gutters.
+
+`GitCli.Job` registers/cancels PIDs under a mutex and drains stdout/stderr concurrently. Completion polling uses 5 ms waits. Unix descendant discovery validates exit status, output, positive PIDs and duplicates; parent cancellation remains best effort when discovery fails. Windows tests do not establish native Unix helper cleanup.
+
+Post-operation filesystem scans and scene reloads are serialized by the instance coordinator in `editor_open.gd`. Recheck dirty scenes immediately before reloading, cancel pending work on disable, and keep modal creation and gutter application outside pending native refreshes. Tests must await completion before starting another modal workflow. Avoid suspended static functions on older Godot VMs.
+
+Use `--git` to select an existing Git executable and `--ca-bundle` to select an independently trusted PEM, or `--native-trust` to exercise the system store. The runner validates supplied PEMs before starting the suite, preserves TLS checks, and reports versions/mode/trust/skips. Do not suppress generic TLS or engine diagnostics or promise identical assertion counts across capabilities. Benchmark counters record actual idle reads, launched diffs, fetched baselines and worker time; they are not universal speedup claims.
